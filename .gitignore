@@ -205,3 +205,16 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Mac system files (match in any directory)
+.DS_Store
+**/.DS_Store
+Icon?
+._*
+
+# Windows thumbnail cache
+Thumbs.db
+ehthumbs.db
+
+# User specific files
+data/*
