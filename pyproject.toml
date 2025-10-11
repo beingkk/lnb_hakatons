@@ -1,0 +1,16 @@
+[project]
+name = "lnb-hakatons"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "pre-commit>=4.3.0",
+    "ruff>=0.14.0",
+]
+
+[tool.ruff]
+select = ["E", "F", "W", "C"]  # Enable common linting rules
+ignore = []  # No rules ignored by default
+line-length = 88  # Set max line length
+fix = true  # Enable automatic fixes
