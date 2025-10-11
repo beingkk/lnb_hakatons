@@ -2,6 +2,13 @@
 
 Repo lai izpētītu LNB hakatona datus
 
+## To do
+
+- Izpētīt visas trīs datus kopas: ielādēt, apstrādāt, aprakstīt datu laukus
+- Pievērst īpašu uzmanību mākslas kritikas datiem
+- Izdomāt dažus izpētes jautājumus
+- ...
+
 ## Setup
 
 Clone this repo
