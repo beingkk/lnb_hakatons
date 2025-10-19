@@ -3,4 +3,4 @@ repos:
     rev: v0.1.0  # Use the latest version of the ruff-pre-commit hook
     hooks:
       - id: ruff
-        args: ["--fix"]  # Automatically fix issues and ignore line too long
+        args: ["--fix", "--ignore", "E501"]  # Automatically fix issues and ignore line too long
