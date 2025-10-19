@@ -19,7 +19,9 @@ dependencies = [
 ]
 
 [tool.ruff]
-select = ["E", "F", "W", "C"]  # Enable common linting rules
-ignore = []  # No rules ignored by default
 line-length = 88  # Set max line length
 fix = true  # Enable automatic fixes
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "C"]  # Enable common linting rules
+ignore = ["E501"]  # Ignore line too long

@@ -190,8 +190,6 @@ def parse_marc_subfields(text: Union[str, None]) -> Dict[str, str]:
     return result
 
 
-
-
 def expand_marc_columns(df: pd.DataFrame, column_name: str, prefix: Optional[str] = None) -> pd.DataFrame:
     """
     Expand a MARC column into separate subfield columns.
