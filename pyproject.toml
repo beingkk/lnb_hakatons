@@ -24,4 +24,4 @@ fix = true  # Enable automatic fixes
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "C"]  # Enable common linting rules
-ignore = ["E501"]  # Ignore line too long
+ignore = []  # Ignore line too long
