@@ -1,6 +1,20 @@
+"""
+Data cleaning pipeline for Latvian National Library art criticism records.
+
+This script processes MARC bibliographic data from the Digital Library,
+cleaning and harmonizing review records for analysis.
+
+Usage:
+    uv run python lnb_hakatons/pipeline/clean_data.py
+
+Input: data/Mākslu kritika/cleaned-records-33-wide.csv
+Output: data/cleaned/recenzijas_clean.csv
+"""
+
 import pandas as pd
 import re
 import logging
+from typing import Dict, List, Optional, Union
 
 from lnb_hakatons import PROJECT_DIR
 
@@ -149,7 +163,7 @@ final_processed_columns = [
 ]
 
  ## Helper functions
-def parse_marc_subfields(text):
+def parse_marc_subfields(text: Union[str, None]) -> Dict[str, str]:
     """
     Parse MARC subfields from text containing $$ delimiters.
 
@@ -175,7 +189,7 @@ def parse_marc_subfields(text):
 
     return result
 
-def expand_marc_columns(df, column_name, prefix=None):
+def expand_marc_columns(df: pd.DataFrame, column_name: str, prefix: Optional[str] = None) -> pd.DataFrame:
     """
     Expand a MARC column into separate subfield columns.
 
@@ -207,7 +221,7 @@ def expand_marc_columns(df, column_name, prefix=None):
 
 
 
-def change_name_pattern(text):
+def change_name_pattern(text: Union[str, None]) -> Union[str, None]:
     """
     Change the pattern "Surname, Name" to "Name Surname"
 
@@ -219,10 +233,10 @@ def change_name_pattern(text):
     - Names with periods: "van der Berg, J." -> "J. van der Berg"
 
     Args:
-        text (str): Name in "Surname, Name" format
+        text: Name in "Surname, Name" format
 
     Returns:
-        str: Name in "Name Surname" format, or original text if no pattern matches
+        Name in "Name Surname" format, or original text if no pattern matches
     """
     if pd.isna(text) or not text:
         return text
@@ -241,7 +255,7 @@ def change_name_pattern(text):
 
 
 
-def create_uncontrolled_name_columns():
+def create_uncontrolled_name_columns() -> List[str]:
     """Create sub-field columns for uncontrolled name fields"""
     sub_fields = ["_4", "_a", "_c", "_d"]
     uncontrolled_name_columns = []
@@ -256,7 +270,7 @@ def create_uncontrolled_name_columns():
     return uncontrolled_name_columns
 
 
-def extract_director_from_245(text):
+def extract_director_from_245(text: Union[str, None]) -> Optional[str]:
     """
     Extract director name(s) from MARC (245)_b subfield text.
 
@@ -266,10 +280,10 @@ def extract_director_from_245(text):
     Handles additional words between director title and name (e.g., "režisors un scenārists FirstName LastName").
 
     Args:
-        text (str): The text from (245)_b subfield
+        text: The text from (245)_b subfield
 
     Returns:
-        str or None: Director name(s) if found, None otherwise
+        Director name(s) if found, None otherwise
     """
     if pd.isna(text) or not text:
         return None
@@ -322,17 +336,17 @@ def extract_director_from_245(text):
     return directors if directors else None
 
 
-def extract_title_from_245(text):
+def extract_title_from_245(text: Union[str, None]) -> Optional[str]:
     """
     Extract title from MARC (245)_b subfield text.
 
     Looks for the first phrase in double quotes, typically after words like "filma", "izrāde", etc.
 
     Args:
-        text (str): The text from (245)_b subfield
+        text: The text from (245)_b subfield
 
     Returns:
-        str or None: Title if found, None otherwise
+        Title if found, None otherwise
     """
     if pd.isna(text) or not text:
         return None
@@ -349,7 +363,7 @@ def extract_title_from_245(text):
     return None
 
 
-def extract_author_from_500(text):
+def extract_author_from_500(text: Union[str, None]) -> Optional[str]:
     """
     Extract author from MARC (500)_a field text.
 
@@ -357,10 +371,10 @@ def extract_author_from_500(text):
     Removes trailing full stop from the name.
 
     Args:
-        text (str): The text from (500)_a field
+        text: The text from (500)_a field
 
     Returns:
-        str or None: Author name if found, None otherwise
+        Author name if found, None otherwise
     """
     if pd.isna(text) or not text:
         return None
@@ -380,17 +394,17 @@ def extract_author_from_500(text):
     return None
 
 
-def extract_title_from_500(text):
+def extract_title_from_500(text: Union[str, None]) -> Optional[str]:
     """
     Extract title from MARC (500)_a field text.
 
     Looks for title between closing brace } and slash /.
 
     Args:
-        text (str): The text from (500)_a field
+        text: The text from (500)_a field
 
     Returns:
-        str or None: Title if found, None otherwise
+        Title if found, None otherwise
     """
     if pd.isna(text) or not text:
         return None
@@ -408,17 +422,17 @@ def extract_title_from_500(text):
     return None
 
 
-def extract_publisher_from_500(text):
+def extract_publisher_from_500(text: Union[str, None]) -> Optional[str]:
     """
     Extract publisher from MARC (500)_a field text.
 
     Looks for publisher between colon after slash and comma.
 
     Args:
-        text (str): The text from (500)_a field
+        text: The text from (500)_a field
 
     Returns:
-        str or None: Publisher if found, None otherwise
+        Publisher if found, None otherwise
     """
     if pd.isna(text) or not text:
         return None
