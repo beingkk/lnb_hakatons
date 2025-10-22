@@ -8,7 +8,9 @@ Usage:
     uv run python lnb_hakatons/pipeline/clean_data.py
 
 Input: data/Mākslu kritika/cleaned-records-33-wide.csv
-Output: data/cleaned/recenzijas_clean.csv
+Output:
+    - data/cleaned/recenzijas_clean.csv (filtered and processed data)
+    - data/cleaned/recenzijas_filtered_out.csv (data that was filtered out for inspection)
 """
 
 import pandas as pd
@@ -26,7 +28,8 @@ logger = logging.getLogger(__name__)
 DATA_DIR = PROJECT_DIR / "data/Mākslu kritika"
 DATA_FILE = "cleaned-records-33-wide.csv"
 OUTPUT_PATH = PROJECT_DIR / "data/cleaned/recenzijas_clean.csv"
-KEEP_OTHER_COLUMNS = True # keep columns that are not processed and explicitly dropped
+FILTERED_OUT_PATH = PROJECT_DIR / "data/cleaned/recenzijas_filtered_out.csv"
+KEEP_OTHER_COLUMNS = True # keep columns that are not processed and explicitly dropped
 
 ## Helper variables
 # Lauki, kurus ņemam ārā
@@ -491,22 +494,36 @@ if __name__ == "__main__":
     # Filter by author type
     logger.info(f"Original number of rows: {len(data_df)}")
 
-    final_df = (
-        simplified_df.copy()
-        [final_columns_all]
-        .loc[simplified_df["AUTORS (100)_4"].isin(AUTORS_100_4_values)]
-    )
+    # Create a copy for filtering operations
+    working_df = simplified_df.copy()[final_columns_all]
 
-    logger.info(f"Number of rows after filtering authors: {len(final_df)}")
+    # First filter: author type
+    author_filter = working_df["AUTORS (100)_4"].isin(AUTORS_100_4_values)
+    filtered_by_author = working_df[author_filter]
+    filtered_out_by_author = working_df[~author_filter]
 
-    # Filter only reviews
-    ir_recenzija = final_df["PRIEKŠMETS - ŽANRS (655)_a"].fillna("").str.lower().str.contains("recenzija")
-    ir_gramata = final_df["PRIEKŠMETS - ŽANRS (655)_a"].fillna("").str.lower().str.contains("grāmatu apskati")
-    ir_vesture = final_df["PRIEKŠMETS - ŽANRS (655)_x"].fillna("").str.lower().str.contains("vēsture un kritika")
+    logger.info(f"Number of rows after filtering authors: {len(filtered_by_author)}")
+    logger.info(f"Number of rows filtered out by author type: {len(filtered_out_by_author)}")
 
-    final_df = final_df[ir_recenzija | ir_vesture | ir_gramata]
+    # Second filter: review type
+    ir_recenzija = filtered_by_author["PRIEKŠMETS - ŽANRS (655)_a"].fillna("").str.lower().str.contains("recenzija")
+    ir_gramata = filtered_by_author["PRIEKŠMETS - ŽANRS (655)_a"].fillna("").str.lower().str.contains("grāmatu apskati")
+    ir_vesture = filtered_by_author["PRIEKŠMETS - ŽANRS (655)_x"].fillna("").str.lower().str.contains("vēsture un kritika")
+
+    review_filter = ir_recenzija | ir_vesture | ir_gramata
+    final_df = filtered_by_author[review_filter]
+    filtered_out_by_review = filtered_by_author[~review_filter]
 
     logger.info(f"Number of rows after filtering recenzijas: {len(final_df)}")
+    logger.info(f"Number of rows filtered out by review type: {len(filtered_out_by_review)}")
+
+    # Combine all filtered-out data
+    all_filtered_out = pd.concat([
+        filtered_out_by_author.assign(filter_reason="Author type not 'aut' or 'rev'"),
+        filtered_out_by_review.assign(filter_reason="Not a review, book review, or history/criticism")
+    ], ignore_index=True)
+
+    logger.info(f"Total rows filtered out: {len(all_filtered_out)}")
 
     ## Processing
 
@@ -633,4 +650,8 @@ if __name__ == "__main__":
 
     ## Save the data
     final_df.to_csv(OUTPUT_PATH, sep=',', index=False)
+
+    # Save filtered-out data for inspection
+    all_filtered_out.to_csv(FILTERED_OUT_PATH, sep=',', index=False)
+    logger.info(f"Saved filtered-out data to: {FILTERED_OUT_PATH}")
 
