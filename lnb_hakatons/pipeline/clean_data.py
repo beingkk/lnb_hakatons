@@ -64,6 +64,7 @@ key_columns = [
 ]
 
 # Autoru tipi, kurus analizējam
+FILTER_BY_AUTHOR_TYPE = False
 AUTORS_100_4_values = ["aut", "rev"]
 
 # Literatūras "žanri"
@@ -491,19 +492,24 @@ if __name__ == "__main__":
     final_columns_all = [col for col in final_columns_all if col in simplified_df.columns]
 
     ## Filtering
-    # Filter by author type
     logger.info(f"Original number of rows: {len(data_df)}")
 
     # Create a copy for filtering operations
     working_df = simplified_df.copy()[final_columns_all]
 
-    # First filter: author type
-    author_filter = working_df["AUTORS (100)_4"].isin(AUTORS_100_4_values)
-    filtered_by_author = working_df[author_filter]
-    filtered_out_by_author = working_df[~author_filter]
+    # First filter: author type (only if FILTER_BY_AUTHOR_TYPE is True)
+    if FILTER_BY_AUTHOR_TYPE:
+        author_filter = working_df["AUTORS (100)_4"].isin(AUTORS_100_4_values)
+        filtered_by_author = working_df[author_filter]
+        filtered_out_by_author = working_df[~author_filter]
 
-    logger.info(f"Number of rows after filtering authors: {len(filtered_by_author)}")
-    logger.info(f"Number of rows filtered out by author type: {len(filtered_out_by_author)}")
+        logger.info(f"Filtering by author type: {AUTORS_100_4_values}")
+        logger.info(f"Number of rows after filtering authors: {len(filtered_by_author)}")
+        logger.info(f"Number of rows filtered out by author type: {len(filtered_out_by_author)}")
+    else:
+        filtered_by_author = working_df
+        filtered_out_by_author = pd.DataFrame()
+        logger.info("Skipping author type filtering")
 
     # Second filter: review type
     ir_recenzija = filtered_by_author["PRIEKŠMETS - ŽANRS (655)_a"].fillna("").str.lower().str.contains("recenzija")
@@ -518,10 +524,13 @@ if __name__ == "__main__":
     logger.info(f"Number of rows filtered out by review type: {len(filtered_out_by_review)}")
 
     # Combine all filtered-out data
-    all_filtered_out = pd.concat([
-        filtered_out_by_author.assign(filter_reason="Author type not 'aut' or 'rev'"),
-        filtered_out_by_review.assign(filter_reason="Not a review, book review, or history/criticism")
-    ], ignore_index=True)
+    filtered_out_list = []
+    if not filtered_out_by_author.empty:
+        filtered_out_list.append(filtered_out_by_author.assign(filter_reason="Author type not 'aut' or 'rev'"))
+    if not filtered_out_by_review.empty:
+        filtered_out_list.append(filtered_out_by_review.assign(filter_reason="Not a review, book review, or history/criticism"))
+
+    all_filtered_out = pd.concat(filtered_out_list, ignore_index=True) if filtered_out_list else pd.DataFrame()
 
     logger.info(f"Total rows filtered out: {len(all_filtered_out)}")
 
