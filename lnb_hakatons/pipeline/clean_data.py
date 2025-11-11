@@ -16,13 +16,18 @@ Output:
 import pandas as pd
 import re
 import logging
-from typing import Dict, List, Optional, Union
+import warnings
+from typing import Dict, List, Optional, Union, Tuple
+from rapidfuzz import fuzz, process
 
 from lnb_hakatons import PROJECT_DIR
 
 ## Logging setup
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+## Suppress performance warnings
+warnings.filterwarnings('ignore', category=pd.errors.PerformanceWarning)
 
 ## Main variables
 DATA_DIR = PROJECT_DIR / "data/Mākslu kritika"
@@ -48,19 +53,34 @@ key_columns = [
     'RAKSTA NOSAUKUMS (245)',
     'PRIEKŠMETS - TEMATS (650)',
     'PRIEKŠMETS - ŽANRS (655)',
+    'PRIEKŠMETS - ŽANRS - 2 (655)',
     'RECENZĒTAIS IZDEVUMS (787)',
+    'RECENZĒTAIS IZDEVUMS - 2 (787)',
     'RECENZĒTAIS IZDEVUMS (500)',
     "RECENZĒTĀ FILMA VAI IZRĀDE (630)",
+    "RECENZĒTĀ FILMA VAI IZRĀDE - 2 (630)",
+    "RECENZĒTĀ FILMA VAI IZRĀDE - 3 (630)",
+    "RECENZĒTĀ FILMA VAI IZRĀDE - 4 (630)",
+    "RECENZĒTĀ FILMA VAI IZRĀDE -2 (630)",
     "AVOTA NOSAUKUMS (773)",
     "ELEKTRONISKĀ ADRESE (856)",
     "PAPILDRAKSTS (700)",
     "PAPILDRAKSTS - 2 (700)",
+    "PRIEKŠMETS - PERSONA (600)",
+    "PRIEKŠMETS - PERSONA - 2 (600)",
+    "PRIEKŠMETS - PERSONA - 3 (600)",
+    "PRIEKŠMETS - PERSONA - 4 (600)",
+    "PRIEKŠMETS - PERSONA - 5 (600)",
     "NEKONTROLĒTS PERSONAS VĀRDS (720)",
     "NEKONTROLĒTS PERSONAS VĀRDS - 2 (720)",
     "NEKONTROLĒTS PERSONAS VĀRDS - 3 (720)",
     "NEKONTROLĒTS PERSONAS VĀRDS - 4 (720)",
     "NEKONTROLĒTS PERSONAS VĀRDS - 5 (720)",
     "PRIEKŠMETS - INSTITŪCIJA (610)",
+    "PRIEKŠMETS - INSTITŪCIJA - 2 (610)",
+    "PRIEKŠMETS - INSTITŪCIJA - 2 (610)2",
+    "PRIEKŠMETS - INSTITŪCIJA - 3 (610)",
+    "PRIEKŠMETS - INSTITŪCIJA - 4 (610)",
 ]
 
 # Autoru tipi, kurus analizējam
@@ -122,7 +142,30 @@ literature_categories = [
     'Latviešu romantiskā proza',
     'Vācu proza',
     'Amerikāņu lugas',
+    'Amerikāņu proza',
+    'Poļu bērnu dzeja',
+    'Spiegu romāni',
+    'Vācu lugas',
+    'Latviešu stāsti',
+    'Latviešu dzeja',
+    'Izraēliešu proza',
+    'Indiešu dzeja',
+    'Franču proza',
+    'Angļu dzeja',
  ]
+
+review_types = [
+    "Teātra recenzijas",
+    "Literatūras recenzijas",
+    "Kinofilmu recenzijas",
+    "Mūzikas recenzijas",
+    "Izstāžu recenzijas",
+    "Operas recenzijas",
+    "Televīzijas raidījumu recenzijas",
+    "Dejas recenzijas",
+    "Baleta recenzijas",
+    "Apskati un recenzijas",
+]
 
 final_processed_columns = [
     "AUTORS (100)_4", # author type; just need rev and aut
@@ -161,6 +204,8 @@ final_processed_columns = [
     "PRIEKŠMETS - TEMATS (650)_a", # topic
     "PRIEKŠMETS - ŽANRS (655)_a", # genre
     "PRIEKŠMETS - ŽANRS (655)_x", # broader genre
+    "PRIEKŠMETS - ŽANRS - 2 (655)_a", # genre 2
+    "PRIEKŠMETS - ŽANRS - 2 (655)_x", # broader genre 2
     # institution
     "PRIEKŠMETS - INSTITŪCIJA (610)_a", # institution name
     "PRIEKŠMETS - INSTITŪCIJA (610)_g", # institution type
@@ -235,6 +280,7 @@ def change_name_pattern(text: Union[str, None]) -> Union[str, None]:
     - Multiple surnames: "van der Berg, Jan" -> "Jan van der Berg"
     - Names with apostrophes: "O'Connor, Mary" -> "Mary O'Connor"
     - Names with periods: "van der Berg, J." -> "J. van der Berg"
+    - Single names with trailing comma: "Sjón," -> "Sjón"
 
     Args:
         text: Name in "Surname, Name" format
@@ -245,17 +291,20 @@ def change_name_pattern(text: Union[str, None]) -> Union[str, None]:
     if pd.isna(text) or not text:
         return text
 
+    text = str(text).strip()
+
     # Pattern to match surname (including hyphens, spaces, apostrophes, periods) followed by comma and first name
     # [^,]+ matches everything up to the comma (handles complex surnames)
     pattern = r'([^,]+),\s*([^,]+)'
 
-    match = re.search(pattern, text.strip())
+    match = re.search(pattern, text)
     if match:
         surname = match.group(1).strip()
         first_name = match.group(2).strip()
         return f"{first_name} {surname}"
 
-    return text
+    # If no match, strip any trailing comma (handles cases like "Sjón,")
+    return text.rstrip(',')
 
 
 
@@ -272,6 +321,64 @@ def create_uncontrolled_name_columns() -> List[str]:
         columns = [col_name + sub_field for sub_field in sub_fields]
         uncontrolled_name_columns += columns
     return uncontrolled_name_columns
+
+
+def create_persona_columns() -> List[str]:
+    """Create sub-field columns for PRIEKŠMETS - PERSONA fields"""
+    sub_fields = ["_a", "_c", "_d"]
+    persona_columns = []
+    for i in range(1, 6):
+        if i == 1:
+            i = ""
+        else:
+            i = f" - {i}"
+        col_name = f"PRIEKŠMETS - PERSONA{i} (600)"
+        columns = [col_name + sub_field for sub_field in sub_fields]
+        persona_columns += columns
+    return persona_columns
+
+
+def find_best_matching_persona(target_name: str, persona_names: List[Tuple[str, str]]) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Find the best matching PRIEKŠMETS - PERSONA name using fuzzy matching.
+
+    Args:
+        target_name: The name to match (recenzeta_darba_autors)
+        persona_names: List of tuples (persona_name, persona_dates) to match against
+
+    Returns:
+        Tuple of (best_matching_name, corresponding_dates) or (None, None) if no good match
+    """
+    if pd.isna(target_name) or not target_name or not persona_names:
+        return None, None
+
+    # Filter out None values
+    valid_personas = [(name, dates) for name, dates in persona_names if pd.notna(name) and name]
+
+    if not valid_personas:
+        return None, None
+
+    # Extract just the names for matching
+    names_only = [name for name, _ in valid_personas]
+
+    # Use rapidfuzz to find the best match
+    # Using token_sort_ratio which handles word order differences well
+    result = process.extractOne(
+        target_name,
+        names_only,
+        scorer=fuzz.token_sort_ratio,
+        score_cutoff=50  # Accept matches with 60% or higher similarity (avoids bad matches)
+    )
+
+    if result is None:
+        return None, None
+
+    best_match_name, score, index = result
+
+    # Get the corresponding dates
+    best_match_dates = valid_personas[index][1]
+
+    return best_match_name, best_match_dates
 
 
 def extract_director_from_245(text: Union[str, None]) -> Optional[str]:
@@ -455,21 +562,629 @@ def extract_publisher_from_500(text: Union[str, None]) -> Optional[str]:
     return None
 
 
+def extract_director_from_630_g(text: Union[str, None]) -> Optional[str]: # noqa: C901
+    """
+    Extract director/author name(s) from RECENZĒTĀ FILMA VAI IZRĀDE (630)_g field text.
+
+    Looks for text after the ":" symbol, strips it, and removes trailing closing parenthesis.
+    Handles multiple comma-separated names by applying name pattern transformation to each.
+
+    Examples:
+        "(teātra izrāde : Jānis Balodis, Anna Belkovska, Viesturs Balodis)."
+        "(filma : režisors Surname, Name)"
+
+    Args:
+        text: The text from (630)_g field
+
+    Returns:
+        Director/author name(s) if found after ":", None otherwise
+    """
+    if pd.isna(text) or not text:
+        return None
+
+    # Find the colon and extract everything after it
+    if ':' in str(text):
+        parts = str(text).split(':', 1)
+        if len(parts) > 1:
+            director = parts[1].strip()
+            # Remove trailing closing parenthesis and periods
+            director = director.rstrip('.)')
+            director = director.rstrip(')')
+            director = director.strip()
+
+            if not director:
+                return None
+
+            # Check if there are multiple names separated by semicolons
+            # (common separator for multiple people in MARC)
+            if ';' in director:
+                names = [n.strip() for n in director.split(';')]
+                processed_names = [change_name_pattern(name) for name in names if name]
+                return ", ".join(processed_names)
+
+            # Try to detect multiple names by looking for pattern:
+            # "FirstWord SecondWord, FirstWord SecondWord"
+            # This handles both "Name Surname, Name Surname" and "Surname, Name, Surname, Name"
+
+            # Split by comma and check if we have multiple complete names
+            potential_names = [n.strip() for n in director.split(',')]
+
+            # If we have multiple parts and at least one has 2+ words (indicating "Name Surname" format)
+            if len(potential_names) > 1:
+                # Check if parts look like separate complete names (have spaces, indicating multi-word names)
+                # vs. "Surname, Name" pattern (first part no space, second part might have space)
+                first_part_words = len(potential_names[0].split())
+
+                # If first part has 2+ words, these are likely already formatted "Name Surname" entries
+                if first_part_words >= 2:
+                    # These are complete "Name Surname" entries, just clean each one
+                    processed_names = [change_name_pattern(name) for name in potential_names if name]
+                    return ", ".join(processed_names)
+
+                # Otherwise, try to detect "Surname, Name" pairs
+                # Pattern: consecutive pairs of "word, word"
+                if len(potential_names) % 2 == 0:
+                    # Even number of parts - might be "Surname, Name, Surname, Name"
+                    names = []
+                    for i in range(0, len(potential_names), 2):
+                        if i + 1 < len(potential_names):
+                            # Reconstruct "Surname, Name" and transform
+                            pair = f"{potential_names[i]}, {potential_names[i+1]}"
+                            names.append(change_name_pattern(pair))
+                    if names:
+                        return ", ".join(names)
+
+            # Single name or simple case - apply pattern transformation
+            return change_name_pattern(director)
+
+    return None
+
+
+def deduplicate_author_lists(row: pd.Series) -> Tuple[List[str], List[str]]:
+    """
+    Create deduplicated lists of authors (names only and names with dates).
+
+    Collects authors from all PRIEKŠMETS - PERSONA fields,
+    deduplicates based on name+dates combination while maintaining order.
+
+    Args:
+        row: DataFrame row containing author fields
+
+    Returns:
+        Tuple of (visi_autori, visi_autori_gadi) - deduplicated lists in corresponding order
+    """
+    author_pairs = []
+
+    # Collect from PRIEKŠMETS - PERSONA fields
+    persona_sources = [
+        ("PRIEKŠMETS - PERSONA (600)_a", "PRIEKŠMETS - PERSONA (600)_d"),
+        ("PRIEKŠMETS - PERSONA - 2 (600)_a", "PRIEKŠMETS - PERSONA - 2 (600)_d"),
+        ("PRIEKŠMETS - PERSONA - 3 (600)_a", "PRIEKŠMETS - PERSONA - 3 (600)_d"),
+        ("PRIEKŠMETS - PERSONA - 4 (600)_a", "PRIEKŠMETS - PERSONA - 4 (600)_d"),
+        ("PRIEKŠMETS - PERSONA - 5 (600)_a", "PRIEKŠMETS - PERSONA - 5 (600)_d"),
+    ]
+
+    for name_field, date_field in persona_sources:
+        name = row.get(name_field)
+        dates = row.get(date_field)
+
+        # Skip if name is empty/null
+        if pd.isna(name) or name == "":
+            continue
+
+        # Clean up name: remove periods followed by spaces (e.g., "Elina. Cērpa" -> "Elina Cērpa")
+        name = str(name).replace(". ", " ").strip()
+
+        # Combine name with dates if dates exist
+        if pd.notna(dates) and dates != "":
+            # Clean up dates (remove trailing period if present)
+            dates_clean = str(dates).rstrip('.')
+            name_with_dates = f"{name} {dates_clean}".strip()
+        else:
+            name_with_dates = name
+
+        author_pairs.append((name, name_with_dates))
+
+    # Deduplicate based on normalized name_with_dates while preserving order
+    seen = set()
+    visi_autori = []
+    visi_autori_gadi = []
+
+    for name, name_with_dates in author_pairs:
+        # Normalize the key for deduplication (remove trailing periods, extra spaces)
+        normalized_key = name_with_dates.rstrip('.').strip()
+
+        if normalized_key not in seen:
+            seen.add(normalized_key)
+            visi_autori.append(name)
+            visi_autori_gadi.append(name_with_dates)
+
+    return visi_autori, visi_autori_gadi
+
+
+def deduplicate_reviewer_lists(row: pd.Series) -> Tuple[List[str], List[str]]:
+    """
+    Create deduplicated lists of reviewers (names only and names with dates).
+
+    Collects reviewers from AUTORS (100) and PAPILDRAKSTS (700) fields,
+    filtering out those with roles 'ive', 'aqt', or 'trl' in the _4 subfield,
+    and deduplicates based on name+dates combination while maintaining order.
+
+    Args:
+        row: DataFrame row containing reviewer fields
+
+    Returns:
+        Tuple of (visi_recenzenti, visi_recenzenti_gadi) - deduplicated lists in corresponding order
+    """
+    reviewer_pairs = []
+
+    # Define sources with their role fields
+    reviewer_sources = [
+        ("AUTORS (100)_a", "AUTORS (100)_d", "AUTORS (100)_4"),
+        ("PAPILDRAKSTS (700)_a", "PAPILDRAKSTS (700)_d", "PAPILDRAKSTS (700)_4"),
+        ("PAPILDRAKSTS - 2 (700)_a", "PAPILDRAKSTS - 2 (700)_d", "PAPILDRAKSTS - 2 (700)_4"),
+    ]
+
+    # Roles to exclude
+    excluded_roles = ["ive", "aqt", "trl"]
+
+    for name_field, date_field, role_field in reviewer_sources:
+        name = row.get(name_field)
+        dates = row.get(date_field)
+        role = row.get(role_field)
+
+        # Skip if name is empty/null
+        if pd.isna(name) or name == "":
+            continue
+
+        # Skip if role is one of the excluded roles
+        if pd.notna(role) and str(role).strip().lower() in excluded_roles:
+            continue
+
+        # Combine name with dates if dates exist
+        if pd.notna(dates) and dates != "":
+            # Clean up dates (remove trailing period if present)
+            dates_clean = str(dates).rstrip('.')
+            name_with_dates = f"{name} {dates_clean}".strip()
+        else:
+            name_with_dates = name
+
+        reviewer_pairs.append((name, name_with_dates))
+
+    # Deduplicate based on normalized name_with_dates while preserving order
+    seen = set()
+    visi_recenzenti = []
+    visi_recenzenti_gadi = []
+
+    for name, name_with_dates in reviewer_pairs:
+        # Normalize the key for deduplication (remove trailing periods, extra spaces)
+        normalized_key = name_with_dates.rstrip('.').strip()
+
+        if normalized_key not in seen:
+            seen.add(normalized_key)
+            visi_recenzenti.append(name)
+            visi_recenzenti_gadi.append(name_with_dates)
+
+    return visi_recenzenti, visi_recenzenti_gadi
+
+
+def remove_reviewers_from_authors(row: pd.Series) -> Tuple[List[str], List[str]]:
+    """
+    Remove reviewers from author lists within the same row.
+
+    Filters out any authors who are also reviewers in the same record,
+    using case-insensitive exact name matching.
+
+    Args:
+        row: DataFrame row containing both author and reviewer fields
+
+    Returns:
+        Tuple of (filtered_visi_autori, filtered_visi_autori_gadi)
+    """
+    visi_autori = row.get("visi_autori", [])
+    visi_autori_gadi = row.get("visi_autori_gadi", [])
+    visi_recenzenti = row.get("visi_recenzenti", [])
+
+    if not isinstance(visi_autori, list) or not isinstance(visi_recenzenti, list):
+        return visi_autori, visi_autori_gadi
+
+    # Create set of reviewer names (normalized)
+    recenzenti_set = {str(name).strip().lower() for name in visi_recenzenti if pd.notna(name)}
+
+    # Filter authors
+    filtered_autori = []
+    filtered_autori_gadi = []
+
+    for i, autor in enumerate(visi_autori):
+        if pd.isna(autor):
+            continue
+        autor_normalized = str(autor).strip().lower()
+        if autor_normalized not in recenzenti_set:
+            filtered_autori.append(autor)
+            if i < len(visi_autori_gadi):
+                filtered_autori_gadi.append(visi_autori_gadi[i])
+
+    return filtered_autori, filtered_autori_gadi
+
+
+def collect_aqt_reviewers(row: pd.Series) -> Tuple[List[str], List[str]]:
+    """
+    Collect reviewers with role "aqt" (quoted authors) from 100/700 fields.
+
+    Args:
+        row: DataFrame row containing author fields
+
+    Returns:
+        Tuple of (reviewer_names, reviewer_names_with_dates)
+    """
+    reviewer_pairs = []
+
+    reviewer_sources = [
+        ("AUTORS (100)_a", "AUTORS (100)_d", "AUTORS (100)_4"),
+        ("PAPILDRAKSTS (700)_a", "PAPILDRAKSTS (700)_d", "PAPILDRAKSTS (700)_4"),
+        ("PAPILDRAKSTS - 2 (700)_a", "PAPILDRAKSTS - 2 (700)_d", "PAPILDRAKSTS - 2 (700)_4"),
+    ]
+
+    for name_field, date_field, role_field in reviewer_sources:
+        name = row.get(name_field)
+        dates = row.get(date_field)
+        role = row.get(role_field)
+
+        if pd.isna(name) or name == "":
+            continue
+
+        if pd.notna(role) and str(role).strip().lower() == "aqt":
+            if pd.notna(dates) and dates != "":
+                dates_clean = str(dates).rstrip('.')
+                name_with_dates = f"{name} {dates_clean}".strip()
+            else:
+                name_with_dates = name
+            reviewer_pairs.append((name, name_with_dates))
+
+    seen = set()
+    visi_recenzenti = []
+    visi_recenzenti_gadi = []
+
+    for name, name_with_dates in reviewer_pairs:
+        normalized_key = name_with_dates.rstrip('.').strip()
+        if normalized_key not in seen:
+            seen.add(normalized_key)
+            visi_recenzenti.append(name)
+            visi_recenzenti_gadi.append(name_with_dates)
+
+    return visi_recenzenti, visi_recenzenti_gadi
+
+
+def parse_245c_names(text: Union[str, None]) -> List[str]:
+    """
+    Parse comma-separated reviewer names from RAKSTA NOSAUKUMS (245)_c field.
+
+    Args:
+        text: Comma-separated names from (245)_c field
+
+    Returns:
+        List of parsed and formatted names
+    """
+    if pd.isna(text) or not text:
+        return []
+
+    names = []
+    for name in str(text).split(','):
+        name = name.strip()
+        if name:
+            formatted_name = change_name_pattern(name)
+            if formatted_name:
+                names.append(formatted_name)
+
+    return names
+
+
+def build_reviewer_lookup(df: pd.DataFrame) -> Dict[str, Tuple[str, Optional[str]]]:
+    """
+    Build a lookup dictionary of all known reviewers in the dataset.
+
+    Args:
+        df: DataFrame with visi_recenzenti and visi_recenzenti_gadi columns
+
+    Returns:
+        Dictionary mapping normalized_name -> (full_name, dates)
+    """
+    reviewer_lookup = {}
+
+    for _, row in df.iterrows():
+        recenzenti = row.get("visi_recenzenti", [])
+        recenzenti_gadi = row.get("visi_recenzenti_gadi", [])
+
+        if not isinstance(recenzenti, list):
+            continue
+
+        for i, name in enumerate(recenzenti):
+            if pd.isna(name) or name == "":
+                continue
+
+            normalized_name = str(name).strip().lower()
+
+            if normalized_name not in reviewer_lookup:
+                name_with_dates = recenzenti_gadi[i] if i < len(recenzenti_gadi) else name
+
+                dates = None
+                if pd.notna(name_with_dates) and name_with_dates != name:
+                    dates = name_with_dates.replace(name, "").strip()
+
+                reviewer_lookup[normalized_name] = (str(name), dates)
+
+    return reviewer_lookup
+
+
+def impute_missing_reviewers(row: pd.Series, reviewer_lookup: Dict[str, Tuple[str, Optional[str]]]) -> Tuple[List[str], List[str]]:
+    """
+    Impute missing reviewers using fallback sources.
+
+    Tries in order:
+    1. If reviewers exist, return them as-is
+    2. Try collecting from aqt roles in 100/700 fields
+    3. Try parsing from RAKSTA NOSAUKUMS (245)_c and lookup dates
+
+    Args:
+        row: DataFrame row
+        reviewer_lookup: Global reviewer name->dates lookup dictionary
+
+    Returns:
+        Tuple of (visi_recenzenti, visi_recenzenti_gadi)
+    """
+    visi_recenzenti = row.get("visi_recenzenti", [])
+    visi_recenzenti_gadi = row.get("visi_recenzenti_gadi", [])
+
+    if isinstance(visi_recenzenti, list) and len(visi_recenzenti) > 0:
+        return visi_recenzenti, visi_recenzenti_gadi
+
+    recenzenti, recenzenti_gadi = collect_aqt_reviewers(row)
+    if len(recenzenti) > 0:
+        return recenzenti, recenzenti_gadi
+
+    names_245c = parse_245c_names(row.get("RAKSTA NOSAUKUMS (245)_c"))
+    if len(names_245c) == 0:
+        return [], []
+
+    recenzenti = []
+    recenzenti_gadi = []
+
+    for name in names_245c:
+        normalized_name = str(name).strip().lower()
+        recenzenti.append(name)
+
+        if normalized_name in reviewer_lookup:
+            full_name, dates = reviewer_lookup[normalized_name]
+            if dates:
+                recenzenti_gadi.append(f"{name} {dates}".strip())
+            else:
+                recenzenti_gadi.append(name)
+        else:
+            recenzenti_gadi.append(name)
+
+    return recenzenti, recenzenti_gadi
+
+
+def build_author_lookup(df: pd.DataFrame) -> Dict[str, str]:
+    """
+    Build a lookup dictionary of author names to names with dates.
+
+    Args:
+        df: DataFrame with author columns
+
+    Returns:
+        Dictionary mapping normalized_name -> name_with_dates
+    """
+    author_lookup = {}
+
+    for _, row in df.iterrows():
+        galvenais_autors = row.get("Galvenais autors (600)")
+        galvenais_autors_gadi = row.get("Galvenais autors un gadi (600)")
+
+        if pd.notna(galvenais_autors) and galvenais_autors != "":
+            normalized_name = str(galvenais_autors).strip().lower()
+
+            if normalized_name not in author_lookup and pd.notna(galvenais_autors_gadi) and galvenais_autors_gadi != "":
+                author_lookup[normalized_name] = str(galvenais_autors_gadi)
+
+    return author_lookup
+
+
+def impute_authors_from_galvenais(row: pd.Series, author_lookup: Dict[str, str], skip_ids: set) -> Tuple[List[str], List[str]]:
+    """
+    Impute empty author lists from Galvenais autors field.
+
+    Args:
+        row: DataFrame row
+        author_lookup: Global author name->name_with_dates lookup dictionary
+        skip_ids: Set of IDs to skip (faulty data)
+
+    Returns:
+        Tuple of (visi_autori, visi_autori_gadi)
+    """
+    record_id = row.get("ID")
+    if record_id in skip_ids:
+        return row.get("Autori (list)", []), row.get("Autori un gadi (list)", [])
+
+    visi_autori = row.get("Autori (list)", [])
+    visi_autori_gadi = row.get("Autori un gadi (list)", [])
+
+    if isinstance(visi_autori, list) and len(visi_autori) > 0:
+        return visi_autori, visi_autori_gadi
+
+    galvenais_autors = row.get("Galvenais autors")
+    if pd.isna(galvenais_autors) or galvenais_autors == "":
+        return [], []
+
+    normalized_name = str(galvenais_autors).strip().lower()
+
+    if normalized_name in author_lookup:
+        name_with_dates = author_lookup[normalized_name]
+        return [galvenais_autors], [name_with_dates]
+    else:
+        return [galvenais_autors], [galvenais_autors]
+
+
+def collect_reviewed_works(row: pd.Series) -> List[str]:
+    """
+    Collect all reviewed works from various MARC fields.
+
+    Checks multiple sources:
+    - RECENZĒTĀ FILMA VAI IZRĀDE (630) fields (all variants)
+    - RECENZĒTAIS IZDEVUMS (787) fields (all variants)
+    - Extracted titles from (245)_b and (500)_a
+
+    Args:
+        row: DataFrame row containing reviewed work fields
+
+    Returns:
+        List of unique reviewed work titles
+    """
+    works = []
+
+    # Sources in priority order (films/performances, then books, then fallbacks)
+    reviewed_work_sources = [
+        # Film/performance titles from (630)_a
+        "RECENZĒTĀ FILMA VAI IZRĀDE (630)_a",
+        "RECENZĒTĀ FILMA VAI IZRĀDE - 2 (630)_a",
+        "RECENZĒTĀ FILMA VAI IZRĀDE - 3 (630)_a",
+        "RECENZĒTĀ FILMA VAI IZRĀDE - 4 (630)_a",
+        "RECENZĒTĀ FILMA VAI IZRĀDE -2 (630)_a",
+        # Book titles from (787)_t
+        "RECENZĒTAIS IZDEVUMS (787)_t",
+        "RECENZĒTAIS IZDEVUMS - 2 (787)_t",
+        # Extracted titles
+        "(787)_title",
+        "(245)_title",
+    ]
+
+    for field in reviewed_work_sources:
+        value = row.get(field)
+
+        if pd.isna(value) or value == "":
+            continue
+
+        # Clean up the value
+        cleaned_value = str(value).strip()
+
+        # Remove colon and text after it (e.g., "Title: Subtitle" -> "Title")
+        if ":" in cleaned_value:
+            cleaned_value = cleaned_value.split(":")[0].strip()
+
+        # Skip if empty after cleaning
+        if not cleaned_value:
+            continue
+
+        # Fix special cases
+        if cleaned_value == "7":
+            cleaned_value = "007: Spektrs"
+
+        works.append(cleaned_value)
+
+    # Deduplicate while preserving order
+    seen = set()
+    unique_works = []
+    for work in works:
+        normalized = work.lower().strip()
+        if normalized not in seen:
+            seen.add(normalized)
+            unique_works.append(work)
+
+    return unique_works
+
+
+def collect_institutions(row: pd.Series) -> List[str]:
+    """
+    Collect all institutions from PRIEKŠMETS - INSTITŪCIJA fields.
+
+    Args:
+        row: DataFrame row containing institution fields
+
+    Returns:
+        List of unique institution names
+    """
+    institutions = []
+
+    # Sources for institutions
+    institution_sources = [
+        "PRIEKŠMETS - INSTITŪCIJA (610)_a",
+        "PRIEKŠMETS - INSTITŪCIJA - 2 (610)_a",
+        "PRIEKŠMETS - INSTITŪCIJA - 2 (610)2_a",
+        "PRIEKŠMETS - INSTITŪCIJA - 3 (610)_a",
+        "PRIEKŠMETS - INSTITŪCIJA - 4 (610)_a",
+        # Also check publisher field as fallback
+        "(787)_publisher",
+    ]
+
+    for field in institution_sources:
+        value = row.get(field)
+
+        if pd.isna(value) or value == "":
+            continue
+
+        # Clean up the value
+        cleaned_value = str(value).strip()
+
+        # Remove periods
+        cleaned_value = cleaned_value.replace(".", "")
+
+        # Fix if there's a colon: take text between colon and comma
+        if ":" in cleaned_value:
+            parts = cleaned_value.split(":")
+            if len(parts) > 1:
+                after_colon = parts[1]
+                if "," in after_colon:
+                    cleaned_value = after_colon.split(",")[0].strip()
+                else:
+                    cleaned_value = after_colon.strip()
+
+        # Skip if empty after cleaning
+        if not cleaned_value:
+            continue
+
+        # Apply specific normalization rules
+        if cleaned_value == "Latvijas Nacionālā opera":
+            cleaned_value = "Latvijas Nacionālā opera un balets"
+
+        institutions.append(cleaned_value)
+
+    # Deduplicate while preserving order
+    seen = set()
+    unique_institutions = []
+    for inst in institutions:
+        normalized = inst.lower().strip()
+        if normalized not in seen:
+            seen.add(normalized)
+            unique_institutions.append(inst)
+
+    return unique_institutions
+
+
 
 if __name__ == "__main__":
     ## Load the data
     data_df = (
         pd.read_csv(DATA_DIR / DATA_FILE, sep=';')
         .drop(columns=columns_to_remove, axis=1)
+        .rename(columns={
+            "PRIEKŠMETS - PERSONA 2 (600)": "PRIEKŠMETS - PERSONA - 2 (600)"
+        })
     )
 
     ## Expand MARC columns
     # Create a simplified version of the data with expanded MARC columns
     simplified_df = data_df.copy()
 
+    # Debug: Check if original columns exist
+    zanr_columns = [col for col in data_df.columns if "ŽANRS" in col]
+    logger.info(f"Original ŽANRS columns in data: {zanr_columns}")
+
     for col in key_columns:
         if col in simplified_df.columns:
+            logger.info(f"Expanding column: {col}")
             simplified_df = expand_marc_columns(simplified_df, col)
+        else:
+            logger.info(f"Column not found (skipping): {col}")
 
     # Keep the rest of the columns
     keep_columns = list(set(data_df.columns).difference(set(key_columns)))
@@ -481,7 +1196,7 @@ if __name__ == "__main__":
     # Create the simplified dataframe
     simplified_df = simplified_df[all_columns]
 
-    final_columns = final_processed_columns + create_uncontrolled_name_columns()
+    final_columns = final_processed_columns + create_uncontrolled_name_columns() + create_persona_columns()
 
     # Add rest of the columns
     if KEEP_OTHER_COLUMNS:
@@ -512,9 +1227,18 @@ if __name__ == "__main__":
         logger.info("Skipping author type filtering")
 
     # Second filter: review type
-    ir_recenzija = filtered_by_author["PRIEKŠMETS - ŽANRS (655)_a"].fillna("").str.lower().str.contains("recenzija")
-    ir_gramata = filtered_by_author["PRIEKŠMETS - ŽANRS (655)_a"].fillna("").str.lower().str.contains("grāmatu apskati")
-    ir_vesture = filtered_by_author["PRIEKŠMETS - ŽANRS (655)_x"].fillna("").str.lower().str.contains("vēsture un kritika")
+    ir_recenzija = (
+        filtered_by_author["PRIEKŠMETS - ŽANRS (655)_a"].fillna("").str.lower().str.contains("recenzija") |
+        filtered_by_author["PRIEKŠMETS - ŽANRS - 2 (655)_a"].fillna("").str.lower().str.contains("recenzija")
+    )
+    ir_gramata = (
+        filtered_by_author["PRIEKŠMETS - ŽANRS (655)_a"].fillna("").str.lower().str.contains("grāmatu apskati") |
+        filtered_by_author["PRIEKŠMETS - ŽANRS - 2 (655)_a"].fillna("").str.lower().str.contains("grāmatu apskati")
+    )
+    ir_vesture = (
+        filtered_by_author["PRIEKŠMETS - ŽANRS (655)_x"].fillna("").str.lower().str.contains("vēsture un kritika") |
+        filtered_by_author["PRIEKŠMETS - ŽANRS - 2 (655)_x"].fillna("").str.lower().str.contains("vēsture un kritika")
+    )
 
     review_filter = ir_recenzija | ir_vesture | ir_gramata
     final_df = filtered_by_author[review_filter]
@@ -564,17 +1288,68 @@ if __name__ == "__main__":
             "NEKONTROLĒTS PERSONAS VĀRDS - 5 (720)_a": lambda df: df["NEKONTROLĒTS PERSONAS VĀRDS - 5 (720)_a"].apply(
                 lambda val: change_name_pattern(val) if pd.notna(val) and val != "" else None
             ),
-            # Combine all authors into one column as a list
-            "visas_personas": lambda df: df[["AUTORS (100)_a", "PAPILDRAKSTS (700)_a", "PAPILDRAKSTS - 2 (700)_a", "NEKONTROLĒTS PERSONAS VĀRDS (720)_a", "NEKONTROLĒTS PERSONAS VĀRDS - 2 (720)_a", "NEKONTROLĒTS PERSONAS VĀRDS - 3 (720)_a", "NEKONTROLĒTS PERSONAS VĀRDS - 4 (720)_a", "NEKONTROLĒTS PERSONAS VĀRDS - 5 (720)_a"]].apply(
-                lambda row: [val for val in row if pd.notna(val) and val != ""],
-                axis=1
-            ),
+        })
+        .pipe(lambda df: (
+            df.assign(**{
+                "PRIEKŠMETS - PERSONA (600)_a": lambda d: d["PRIEKŠMETS - PERSONA (600)_a"].apply(
+                    lambda val: change_name_pattern(val) if pd.notna(val) and val != "" else None
+                )
+            })
+            if "PRIEKŠMETS - PERSONA (600)_a" in df.columns else df
+        ))
+        .pipe(lambda df: (
+            df.assign(**{
+                "PRIEKŠMETS - PERSONA - 2 (600)_a": lambda d: d["PRIEKŠMETS - PERSONA - 2 (600)_a"].apply(
+                    lambda val: change_name_pattern(val) if pd.notna(val) and val != "" else None
+                )
+            })
+            if "PRIEKŠMETS - PERSONA - 2 (600)_a" in df.columns else df
+        ))
+        .pipe(lambda df: (
+            df.assign(**{
+                "PRIEKŠMETS - PERSONA - 3 (600)_a": lambda d: d["PRIEKŠMETS - PERSONA - 3 (600)_a"].apply(
+                    lambda val: change_name_pattern(val) if pd.notna(val) and val != "" else None
+                )
+            })
+            if "PRIEKŠMETS - PERSONA - 3 (600)_a" in df.columns else df
+        ))
+        .pipe(lambda df: (
+            df.assign(**{
+                "PRIEKŠMETS - PERSONA - 4 (600)_a": lambda d: d["PRIEKŠMETS - PERSONA - 4 (600)_a"].apply(
+                    lambda val: change_name_pattern(val) if pd.notna(val) and val != "" else None
+                )
+            })
+            if "PRIEKŠMETS - PERSONA - 4 (600)_a" in df.columns else df
+        ))
+        .pipe(lambda df: (
+            df.assign(**{
+                "PRIEKŠMETS - PERSONA - 5 (600)_a": lambda d: d["PRIEKŠMETS - PERSONA - 5 (600)_a"].apply(
+                    lambda val: change_name_pattern(val) if pd.notna(val) and val != "" else None
+                )
+            })
+            if "PRIEKŠMETS - PERSONA - 5 (600)_a" in df.columns else df
+        ))
+        .assign(**{
             # Combine subfields _a and _b
             "RAKSTA NOSAUKUMS (245)_ab": lambda df: df["RAKSTA NOSAUKUMS (245)_a"].fillna("") + " " + df["RAKSTA NOSAUKUMS (245)_b"].fillna(""),
             # Remove full stops in genre
             "PRIEKŠMETS - ŽANRS (655)_a": lambda df: df["PRIEKŠMETS - ŽANRS (655)_a"].str.replace(".", "").str.strip(),
+            "PRIEKŠMETS - ŽANRS - 2 (655)_a": lambda df: df["PRIEKŠMETS - ŽANRS - 2 (655)_a"].str.replace(".", "").str.strip(),
             "PRIEKŠMETS - INSTITŪCIJA (610)_a": lambda df: df["PRIEKŠMETS - INSTITŪCIJA (610)_a"].str.replace(".", "").str.strip(),
         })
+        # Conditionally process - 2 fields if they exist
+        .pipe(lambda df: (
+            df.assign(**{
+                "PRIEKŠMETS - ŽANRS - 2 (655)_a": lambda d: d["PRIEKŠMETS - ŽANRS - 2 (655)_a"].str.replace(".", "").str.strip()
+            })
+            if "PRIEKŠMETS - ŽANRS - 2 (655)_a" in df.columns else df
+        ))
+        .pipe(lambda df: (
+            df.assign(**{
+                "PRIEKŠMETS - ŽANRS - 2 (655)_x": lambda d: d["PRIEKŠMETS - ŽANRS - 2 (655)_x"].str.replace(".", "").str.strip()
+            })
+            if "PRIEKŠMETS - ŽANRS - 2 (655)_x" in df.columns else df
+        ))
         .assign(**{
             # remove colon from the end of the title (only the end - there might be a space before and/or after)
             "RAKSTA NOSAUKUMS (245)_a": lambda df: df["RAKSTA NOSAUKUMS (245)_a"].fillna("").str.rstrip(": /").str.strip(),
@@ -619,32 +1394,188 @@ if __name__ == "__main__":
                 lambda val: val if pd.notna(val) and val != "" else None
             ).fillna(df["(500)_publisher"]),
         })
-        # harmonized recenzeta_darba_autors un recenzetais_darbs to combine either 245 or 787
+        # Extract director from all (630)_g fields
         .assign(**{
-            "recenzeta_darba_autors": lambda df: df["(787)_author"].replace("", None).fillna(df["(245)_director"]),
-            "recenzetais_darbs": lambda df: df["(787)_title"].replace("", None).fillna(df["(245)_title"]),
-            "publicetajs_vai_institucija": lambda df: df["(787)_publisher"].replace("", None).fillna(df["PRIEKŠMETS - INSTITŪCIJA (610)_a"]),
+            "(630)_director": lambda df: df["RECENZĒTĀ FILMA VAI IZRĀDE (630)_g"].apply(extract_director_from_630_g),
         })
-        # fix if there is still a colon in the publicetajs_vai_institucija then take the text between the colon and the next comma
         .assign(**{
-            "publicetajs_vai_institucija": lambda df: df["publicetajs_vai_institucija"].apply(
-                lambda x: x.split(":")[1].split(",")[0].strip() if pd.notna(x) and ":" in str(x) else x
+            # For galvenais_autors, prioritize (630)_director, then use (787)_author, then (245)_director
+            "galvenais_autors": lambda df: (
+                df["(630)_director"]
+                .replace("", None)
+                .fillna(df["(787)_author"])
+                .replace("", None)
+                .fillna(df["(245)_director"])
             ),
         })
-        # try filling rezentais_darbs nulls with RECENZĒTĀ FILMA VAI IZRĀDE (630)_a
+        # Fuzzy match galvenais_autors with PRIEKŠMETS - PERSONA fields
         .assign(**{
-            "recenzetais_darbs": lambda df: df["recenzetais_darbs"].fillna(df["RECENZĒTĀ FILMA VAI IZRĀDE (630)_a"]),
+            "recenzeta_darba_autors_600": lambda df: df.apply(
+                lambda row: find_best_matching_persona(
+                    row["galvenais_autors"],
+                    [
+                        (row.get("PRIEKŠMETS - PERSONA (600)_a"), row.get("PRIEKŠMETS - PERSONA (600)_d")),
+                        (row.get("PRIEKŠMETS - PERSONA - 2 (600)_a"), row.get("PRIEKŠMETS - PERSONA - 2 (600)_d")),
+                        (row.get("PRIEKŠMETS - PERSONA - 3 (600)_a"), row.get("PRIEKŠMETS - PERSONA - 3 (600)_d")),
+                        (row.get("PRIEKŠMETS - PERSONA - 4 (600)_a"), row.get("PRIEKŠMETS - PERSONA - 4 (600)_d")),
+                        (row.get("PRIEKŠMETS - PERSONA - 5 (600)_a"), row.get("PRIEKŠMETS - PERSONA - 5 (600)_d")),
+                    ]
+                )[0],
+                axis=1
+            ),
+            "_matched_dates": lambda df: df.apply(
+                lambda row: find_best_matching_persona(
+                    row["galvenais_autors"],
+                    [
+                        (row.get("PRIEKŠMETS - PERSONA (600)_a"), row.get("PRIEKŠMETS - PERSONA (600)_d")),
+                        (row.get("PRIEKŠMETS - PERSONA - 2 (600)_a"), row.get("PRIEKŠMETS - PERSONA - 2 (600)_d")),
+                        (row.get("PRIEKŠMETS - PERSONA - 3 (600)_a"), row.get("PRIEKŠMETS - PERSONA - 3 (600)_d")),
+                        (row.get("PRIEKŠMETS - PERSONA - 4 (600)_a"), row.get("PRIEKŠMETS - PERSONA - 4 (600)_d")),
+                        (row.get("PRIEKŠMETS - PERSONA - 5 (600)_a"), row.get("PRIEKŠMETS - PERSONA - 5 (600)_d")),
+                    ]
+                )[1],
+                axis=1
+            ),
         })
         .assign(**{
-            "recenzetais_darbs": lambda df: df["recenzetais_darbs"].str.split(":").str[0].str.strip(),
+            "recenzeta_darba_autors_gads": lambda df: df["recenzeta_darba_autors_600"].fillna("") + " " + df["_matched_dates"].fillna(""),
         })
-        # if  PRIEKŠMETS - ŽANRS (655)_a is in literature_categories the use "Literatūra", otherwise keep the value
         .assign(**{
-            "recenzijas_tips": lambda df: df["PRIEKŠMETS - ŽANRS (655)_a"].apply(
-                lambda val: "Literatūras recenzijas" if val in literature_categories else val
+            "recenzeta_darba_autors_gads": lambda df: df["recenzeta_darba_autors_gads"].str.strip().replace("", None),
+        })
+        .drop(columns=["_matched_dates"])
+        .assign(**{
+            "recenzijas_tips": lambda df: df.apply(
+                lambda row: (
+                    # Priority 1: PRIEKŠMETS - ŽANRS (655)_a contains "recenzija"
+                    row["PRIEKŠMETS - ŽANRS (655)_a"] if (pd.notna(row["PRIEKŠMETS - ŽANRS (655)_a"]) and
+                                                           "recenzija" in row["PRIEKŠMETS - ŽANRS (655)_a"].lower())
+                    # Priority 2: PRIEKŠMETS - ŽANRS - 2 (655)_a contains "recenzija"
+                    else row["PRIEKŠMETS - ŽANRS - 2 (655)_a"] if (pd.notna(row["PRIEKŠMETS - ŽANRS - 2 (655)_a"]) and
+                                                                    "recenzija" in row["PRIEKŠMETS - ŽANRS - 2 (655)_a"].lower())
+                    # Priority 3: Either field is in literature_categories
+                    else "Literatūras recenzijas" if (
+                        (pd.notna(row["PRIEKŠMETS - ŽANRS (655)_a"]) and row["PRIEKŠMETS - ŽANRS (655)_a"] in literature_categories) or
+                        (pd.notna(row["PRIEKŠMETS - ŽANRS - 2 (655)_a"]) and row["PRIEKŠMETS - ŽANRS - 2 (655)_a"] in literature_categories)
+                    )
+                    # Priority 4: Fall back to first field, then second field
+                    else (row["PRIEKŠMETS - ŽANRS (655)_a"] if pd.notna(row["PRIEKŠMETS - ŽANRS (655)_a"])
+                          else row["PRIEKŠMETS - ŽANRS - 2 (655)_a"])
+                ),
+                axis=1
             )
         })
-        # drop the helper columns for authors and title, and keep only the harmonised columns
+        # Unique author name + year info
+        .assign(**{
+            "AUTORS_ad": lambda df: df["AUTORS (100)_a"].fillna("") + " " + df["AUTORS (100)_d"].fillna(""),
+        })
+        .astype({"GADS (008)": "int64"})
+        .query("`GADS (008)` >= 2015")
+        .query("`recenzijas_tips` in @review_types")
+        # Format the title column: remove square brackets and the trailing / slash
+        .assign(**{
+            "RAKSTA NOSAUKUMS (245)_ab": lambda df: (
+                df["RAKSTA NOSAUKUMS (245)_ab"]
+                .str.replace("[", "")
+                .str.replace("]", "")
+                .str.strip()
+                .str.rstrip("/")
+                .str.strip()
+            ),
+        })
+        # Create deduplicated author lists (names only and names with dates)
+        .assign(**{
+            "_author_tuples": lambda df: df.apply(deduplicate_author_lists, axis=1),
+        })
+        .assign(**{
+            "visi_autori": lambda df: df["_author_tuples"].apply(lambda x: x[0]),
+            "visi_autori_gadi": lambda df: df["_author_tuples"].apply(lambda x: x[1]),
+        })
+        .drop(columns=["_author_tuples"])
+        # Create deduplicated reviewer lists (names only and names with dates)
+        .assign(**{
+            "_reviewer_tuples": lambda df: df.apply(deduplicate_reviewer_lists, axis=1),
+        })
+        .assign(**{
+            "visi_recenzenti": lambda df: df["_reviewer_tuples"].apply(lambda x: x[0]),
+            "visi_recenzenti_gadi": lambda df: df["_reviewer_tuples"].apply(lambda x: x[1]),
+        })
+        .drop(columns=["_reviewer_tuples"])
+        # Collect all reviewed works from multiple sources
+        .assign(**{
+            "visi_recenzetie_darbi": lambda df: df.apply(collect_reviewed_works, axis=1),
+        })
+        # Collect all institutions from multiple sources
+        .assign(**{
+            "visas_institucijas": lambda df: df.apply(collect_institutions, axis=1),
+        })
+    )
+
+    # Build reviewer lookup from the dataset for imputation
+    logger.info("Building global reviewer lookup for imputation...")
+    reviewer_lookup = build_reviewer_lookup(final_df)
+    logger.info(f"Built reviewer lookup with {len(reviewer_lookup)} unique reviewers")
+
+    # Continue pipeline with imputation
+    final_df = (
+        final_df
+        # Impute missing reviewers using aqt roles and 245_c field
+        .assign(**{
+            "_imputed_reviewer_tuples": lambda df: df.apply(
+                lambda row: impute_missing_reviewers(row, reviewer_lookup), axis=1
+            ),
+        })
+        .assign(**{
+            "visi_recenzenti": lambda df: df["_imputed_reviewer_tuples"].apply(lambda x: x[0]),
+            "visi_recenzenti_gadi": lambda df: df["_imputed_reviewer_tuples"].apply(lambda x: x[1]),
+        })
+        .drop(columns=["_imputed_reviewer_tuples"])
+    )
+
+    # Log imputation statistics
+    empty_reviewers = final_df["visi_recenzenti"].apply(lambda x: len(x) == 0 if isinstance(x, list) else True).sum()
+    logger.info(f"After imputation: {empty_reviewers} records still have no reviewers")
+
+    # Continue pipeline
+    final_df = (
+        final_df
+        # Remove reviewers from author lists
+        .assign(**{
+            "_filtered_author_tuples": lambda df: df.apply(remove_reviewers_from_authors, axis=1),
+        })
+        .assign(**{
+            "visi_autori": lambda df: df["_filtered_author_tuples"].apply(lambda x: x[0]),
+            "visi_autori_gadi": lambda df: df["_filtered_author_tuples"].apply(lambda x: x[1]),
+        })
+        .drop(columns=["_filtered_author_tuples"])
+        # Create comma-separated text versions of the lists
+        .assign(**{
+            "visi_autori_teksts": lambda df: df["visi_autori"].apply(
+                lambda x: ", ".join(x) if isinstance(x, list) and len(x) > 0 else None
+            ),
+            "visi_autori_gadi_teksts": lambda df: df["visi_autori_gadi"].apply(
+                lambda x: ", ".join(x) if isinstance(x, list) and len(x) > 0 else None
+            ),
+            "visi_recenzenti_teksts": lambda df: df["visi_recenzenti"].apply(
+                lambda x: ", ".join(x) if isinstance(x, list) and len(x) > 0 else None
+            ),
+            "visi_recenzenti_gadi_teksts": lambda df: df["visi_recenzenti_gadi"].apply(
+                lambda x: ", ".join(x) if isinstance(x, list) and len(x) > 0 else None
+            ),
+            "visi_recenzetie_darbi_teksts": lambda df: df["visi_recenzetie_darbi"].apply(
+                lambda x: ", ".join(x) if isinstance(x, list) and len(x) > 0 else None
+            ),
+            "visas_institucijas_teksts": lambda df: df["visas_institucijas"].apply(
+                lambda x: ", ".join(x) if isinstance(x, list) and len(x) > 0 else None
+            ),
+        })
+        # Detect language of the title
+        # .assign(**{
+        #     "RAKSTA_NOSAUKUMS_valoda": lambda df: df["RAKSTA NOSAUKUMS (245)_ab"].apply(
+        #         lambda x: detect(x) if pd.notna(x) and len(str(x).strip()) > 0 else None
+        #     ),
+        # })
+        # drop the helper columns for authors and title, and keep only the harmonised columns
         .drop(columns=[
             "(245)_director",
             "(245)_title",
@@ -657,8 +1588,163 @@ if __name__ == "__main__":
         ])
     )
 
+    ## Rename and reorder columns
+    column_rename_map = {
+        "visi_recenzenti": "Recenzenti (list)",
+        "visi_recenzenti_teksts": "Recenzenti",
+        "visi_recenzenti_gadi": "Recenzenti un gadi (list)",
+        "visi_recenzenti_gadi_teksts": "Recenzenti un gadi",
+        "AVOTA NOSAUKUMS (773)_t": "Avots",
+        "PRIEKŠMETS - TEMATS (650)_a": "Temats",
+        "GADS (008)": "Gads",
+        "RAKSTA NOSAUKUMS (245)_ab": "Recenzijas virsraksts",
+        "galvenais_autors": "Galvenais autors",
+        "recenzeta_darba_autors_600": "Galvenais autors (600)",
+        "recenzeta_darba_autors_gads": "Galvenais autors un gadi (600)",
+        "visi_autori": "Autori (list)",
+        "visi_autori_teksts": "Autori",
+        "visi_autori_gadi": "Autori un gadi (list)",
+        "visi_autori_gadi_teksts": "Autori un gadi",
+        "visi_recenzetie_darbi": "Recenzētais darbs (list)",
+        "visi_recenzetie_darbi_teksts": "Recenzētais darbs",
+        "visas_institucijas": "Saistītā organizācija vai notikums (list)",
+        "visas_institucijas_teksts": "Saistītā organizācija vai notikums",
+        "recenzijas_tips": "Recenzijas tips",
+    }
+
+    # Rename columns
+    final_df = final_df.rename(columns=column_rename_map)
+
+    # Reorder columns: ID first, then renamed columns, then the rest
+    priority_columns = ["ID"] + list(column_rename_map.values())
+    other_columns = [col for col in final_df.columns if col not in priority_columns]
+    final_columns_ordered = [col for col in priority_columns if col in final_df.columns] + other_columns
+    final_df = final_df[final_columns_ordered]
+
+    ## Impute empty author lists from Galvenais autors
+    skip_ids = {3761104, 3739729, 3669493, 3721723, 3734207}
+    logger.info("Building author lookup for imputation from Galvenais autors...")
+    author_lookup = build_author_lookup(final_df)
+    logger.info(f"Built author lookup with {len(author_lookup)} unique authors")
+
+    # Apply imputation
+    final_df = final_df.assign(
+        _imputed_author_tuples=lambda df: df.apply(
+            lambda row: impute_authors_from_galvenais(row, author_lookup, skip_ids), axis=1
+        )
+    ).assign(
+        **{
+            "Autori (list)": lambda df: df["_imputed_author_tuples"].apply(lambda x: x[0]),
+            "Autori un gadi (list)": lambda df: df["_imputed_author_tuples"].apply(lambda x: x[1]),
+        }
+    ).drop(columns=["_imputed_author_tuples"])
+
+    # Recreate text versions
+    final_df = final_df.assign(
+        **{
+            "Autori": lambda df: df["Autori (list)"].apply(
+                lambda x: ", ".join(x) if isinstance(x, list) and len(x) > 0 else None
+            ),
+            "Autori un gadi": lambda df: df["Autori un gadi (list)"].apply(
+                lambda x: ", ".join(x) if isinstance(x, list) and len(x) > 0 else None
+            ),
+        }
+    )
+
+    empty_authors = final_df["Autori (list)"].apply(lambda x: len(x) == 0 if isinstance(x, list) else True).sum()
+    logger.info(f"After author imputation: {empty_authors} records still have no authors")
+
+    ## Deduplicate rows
+    # Define primary columns to measure completeness
+    primary_columns = [
+        "Recenzenti un gadi",
+        "Avots",
+        "Galvenais autors",
+        "Recenzētais darbs",
+        "Saistītā organizācija vai notikums",
+        "Recenzijas tips"
+    ]
+
+    # Score each row based on completeness in primary columns
+    final_df = final_df.assign(
+        _completeness_score=lambda df: df[primary_columns].notna().sum(axis=1)
+    )
+
+    # Define duplicate subset
+    duplicate_subset = ["Recenzenti un gadi", "Gads", "Recenzijas virsraksts"]
+
+    # For each duplicate group, keep the row with the highest completeness score
+    deduplicated_df = (
+        final_df
+        .sort_values(by="_completeness_score", ascending=False)
+        .drop_duplicates(subset=duplicate_subset, keep="first")
+        .drop(columns="_completeness_score")
+    )
+
+    final_df = deduplicated_df
+    logger.info(f"Number of rows after deduplication: {len(final_df)}")
+
     ## Save the data
     final_df.to_csv(OUTPUT_PATH, sep=',', index=False)
+    logger.info(f"Final number of rows: {len(final_df)}")
+
+    # Create and save exploded tables for reviewers
+    recenzenti_df = (
+        final_df[["ID", "Recenzenti (list)", "Recenzenti un gadi (list)"]]
+        .explode(["Recenzenti (list)", "Recenzenti un gadi (list)"])
+        .dropna(subset=["Recenzenti (list)"])
+        .rename(columns={
+            "Recenzenti (list)": "Recenzents",
+            "Recenzenti un gadi (list)": "Recenzents un gadi"
+        })
+    )
+    recenzenti_path = PROJECT_DIR / "data/cleaned/recenzijas_recenzenti.csv"
+    recenzenti_df.to_csv(recenzenti_path, sep=',', index=False)
+    logger.info(f"Saved exploded reviewers table to: {recenzenti_path}")
+    logger.info(f"Number of reviewer rows: {len(recenzenti_df)}")
+
+    # Create and save exploded tables for authors
+    autori_df = (
+        final_df[["ID", "Autori (list)", "Autori un gadi (list)"]]
+        .explode(["Autori (list)","Autori un gadi (list)"])
+        .dropna(subset=["Autori (list)"])
+        .rename(columns={
+            "Autori (list)": "Autors",
+            "Autori un gadi (list)": "Autors un gadi"
+        })
+    )
+    autori_path = PROJECT_DIR / "data/cleaned/recenzijas_autori.csv"
+    autori_df.to_csv(autori_path, sep=',', index=False)
+    logger.info(f"Saved exploded authors table to: {autori_path}")
+    logger.info(f"Number of author rows: {len(autori_df)}")
+
+    # Create and save exploded tables for reviewed works
+    recenzetie_darbi_df = (
+        final_df[["ID", "Recenzētais darbs (list)"]]
+        .explode(["Recenzētais darbs (list)"])
+        .dropna(subset=["Recenzētais darbs (list)"])
+        .rename(columns={
+            "Recenzētais darbs (list)": "Recenzētais darbs"
+        })
+    )
+    recenzetie_darbi_path = PROJECT_DIR / "data/cleaned/recenzijas_recenzetie_darbi.csv"
+    recenzetie_darbi_df.to_csv(recenzetie_darbi_path, sep=',', index=False)
+    logger.info(f"Saved exploded reviewed works table to: {recenzetie_darbi_path}")
+    logger.info(f"Number of reviewed work rows: {len(recenzetie_darbi_df)}")
+
+    # Create and save exploded tables for institutions
+    institucijas_df = (
+        final_df[["ID", "Saistītā organizācija vai notikums (list)"]]
+        .explode(["Saistītā organizācija vai notikums (list)"])
+        .dropna(subset=["Saistītā organizācija vai notikums (list)"])
+        .rename(columns={
+            "Saistītā organizācija vai notikums (list)": "Saistītā organizācija vai notikums"
+        })
+    )
+    institucijas_path = PROJECT_DIR / "data/cleaned/recenzijas_institucijas.csv"
+    institucijas_df.to_csv(institucijas_path, sep=',', index=False)
+    logger.info(f"Saved exploded institutions table to: {institucijas_path}")
+    logger.info(f"Number of institution rows: {len(institucijas_df)}")
 
     # Save filtered-out data for inspection
     all_filtered_out.to_csv(FILTERED_OUT_PATH, sep=',', index=False)

@@ -14,8 +14,10 @@ requires-python = ">=3.13"
 dependencies = [
     "altair>=5.5.0",
     "jupyter>=1.1.1",
+    "langdetect>=1.0.9",
     "pandas>=2.3.3",
     "pre-commit>=4.3.0",
+    "rapidfuzz>=3.14.1",
     "ruff>=0.14.0",
 ]
 
