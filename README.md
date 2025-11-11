@@ -1,13 +1,6 @@
 # lnb_hakatons
 
-Repo lai izpētītu LNB hakatona datus
-
-## To do
-
-- Izpētīt visas trīs datus kopas: ielādēt, apstrādāt, aprakstīt datu laukus
-- Pievērst īpašu uzmanību mākslas kritikas datiem
-- Izdomāt dažus izpētes jautājumus
-- ...
+Repo lai izpētītu LNB hakatona datus (Komanda #3, "Dālijas")
 
 ## Setup
 
@@ -41,6 +34,10 @@ lnb_hakatons/
 ├── uv.lock
 ├── .pre-commit-config.yaml
 ├── .gitignore
+├── lnb_hakatons/
+│   ├── pipeline/
+│       ├── clean_data.py
+├── notebooks/
 ├── data/
 │   ├── Digitālās bibliotēkas lietojums/
 │   ├── Digitālās bibliotēkas saturs/
@@ -50,3 +47,8 @@ lnb_hakatons/
 │       ├── cleaned_records_2.txt
 │       ├── cleaned_records_2.xlsx
 ```
+
+## Data cleaning
+
+Data cleaning script can be found in lnb_hakatons/pipeline/clean_data.py
+
