@@ -50,5 +50,12 @@ lnb_hakatons/
 
 ## Data cleaning
 
-Data cleaning script can be found in lnb_hakatons/pipeline/clean_data.py
+After the input data is added to the data folder, the data cleaning script can be ran from the terminal with the following command:
 
+```
+uv run python lnb_hakatons/pipeline/clean_data.py
+```
+
+This will create several output files that were used in a Power BI dashboard. Please reach out to me for further documentation and discussion of limitations.
+
+The rest of .py files and Jupyter Notebooks were used for development and checking outputs, but are not needed for data cleaning.
